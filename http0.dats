@@ -14,7 +14,7 @@ Upgrade-Insecure-Requests: 1\r
 \r
 "
 
-datatype Methods =
+datatype Method =
   | Get
   | Head
   | Post
@@ -39,6 +39,7 @@ implement main0 () = {
     , colon = intBtwe(~1,BUFLEN)
     , first_non_whitespace = intBtwe(~1,BUFLEN-2)
     , last_non_whitespace = intBtwe(~1,BUFLEN-2)
+   // , method = Method
     , finished = bool
     , err = bool
     }
@@ -50,6 +51,7 @@ implement main0 () = {
   , colon = ~1 
   , first_non_whitespace = ~1 
   , last_non_whitespace = ~1
+  //, method = Get()
   , finished = false
   , err = false
   }
@@ -81,12 +83,58 @@ implement main0 () = {
                         env0.last_non_whitespace := ~1;
                       )
                   in if line = 0
-                     then { 
-                        var env : void = ()
+                     then {
+                        var env : @(int,string,bool,Method) = @(0,"",false,Get())
                         implement
-                        string_foreach$fwork<void>(c,x) = println!(c)
-                        val _ = string_foreach_env<void>( $UNSAFE.castvwtp1{string len}(env0.buf), env ) 
-                        }
+                        string_foreach$cont<(@(int,string,bool,Method))>(c,x) = x.0 != ~1
+                        implement
+                        string_foreach$fwork<(@(int,string,bool,Method))>(c,x) = (
+                          if x.1 = "" && x.0 != 2 
+                          then (  
+                            ifcase
+                             | c0 = 'g' => (x.0 := 2; x.1 := "et"; x.3 := Get())
+                             | c0 = 'h' => (x.0 := 2; x.1 := "ead"; x.3 := Head())
+                             | c0 = 'p' => x.0 := 1
+                             | c0 = 'd' => (x.0 := 2; x.1 := "elete"; x.3 := Delete())
+                             | c0 = 'c' => (x.0 := 2; x.1 := "onnect"; x.3 := Connect())
+                             | c0 = 'o' && x.0 = 0 => (x.0 := 2; x.1 := "ptions"; x.3 := Options())
+                             | c0 = 'o' && x.0 = 1 => (x.0 := 2; x.1 := "st"; x.3 := Post())
+                             | c0 = 't' => (x.0 := 2; x.1 := "race"; x.3 := Trace())
+                             | c0 = 'u' && x.0 = 1 => (x.0 := 2; x.1 := "t"; x.3 := Put())
+                             | c0 = 'a' && x.0 = 1 => (x.0 := 2; x.1 := "tch"; x.3 := Patch())
+                             | _ => x.0 := ~1
+                            )
+                          else 
+                            let
+                               val s1 = g1ofg0(x.1)
+                             in if string_isnot_empty(s1)
+                                then if s1.head() = c0
+                                     then x.1 := s1.tail()
+                                     else x.0 := ~1
+                                else 
+                                  if isspace(c0)
+                                  then x.2 := true
+                                  else x.0 := ~1
+                            end
+                          ) where {
+                            val c0 = tolower(c)
+                          }
+ 
+                        val _ = string_foreach_env<(@(int,string,bool,Method))>( $UNSAFE.castvwtp1{string len}(env0.buf), env )
+                        val () =
+                          if env.2 then 
+                            case env.3 of
+                            | Get() => println!("Get")
+                            | Post() => println!("Post")
+                            | Put() => println!("Put")
+                            | Patch() => println!("Patch")
+                            | Delete() => println!("Delete")
+                            | Connect() => println!("Connect")
+                            | Options() => println!("Options")
+                            | Head() => println!("Head")
+                            | Trace() => println!("Trace")
+                          else env0.err := true
+                      }
                      else ( 
                        if colon >= 0 
                        then if colon < sz2i(i)

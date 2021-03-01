@@ -25,9 +25,11 @@ datatype Method =
   | Trace
   | Patch
 
-fn is_uri_char( c : char ) : bool =
+fn {} is_uri_char( c : char ) : bool =
     isalpha(c) || isdigit(c) || 
     strchr("-._~:/?#[]@!$&'()*+,;=", c) > ~1
+
+fn {} is_ows( c : char ) : bool = c = ' ' || c = '\t'
 
 fn method_print( fp: FILEref, m : Method ) : void =
   case m of
@@ -41,29 +43,52 @@ fn method_print( fp: FILEref, m : Method ) : void =
   | Head() => fprint!(fp,"Head")
   | Trace() => fprint!(fp,"Trace")
 
-implement main0 () = {
-  #define BUFLEN 8192
-  var buf = @[char][BUFLEN]()
 
-  val ( pf | ap )
-    = arrayptr_objectify( view@buf | addr@buf )
+extern
+fun {env:vt@ype+}  
+http_req$route( 
+    method: Method
+  , uri: !Strptr1 
+  , version: @(int,int)
+  , env: &env >> _ 
+) : void  
 
-  vtypedef env = @{
-      buf = arrayptr(char?,buf,BUFLEN)
-    , i = sizeLte(BUFLEN)
-    , line = size_t
-    , colon = intBtwe(~1,BUFLEN)
-    , first_non_whitespace = intBtwe(~1,BUFLEN-2)
-    , last_non_whitespace = intBtwe(~1,BUFLEN-2)
-    , method = Method
-    , version_major = int
-    , version_minor = int
-    , finished = bool
-    , err = bool
-    }
+extern
+fun {env:vt@ype+} 
+http_req$header( key: !Strptr1 , value: !Strptr1, env: &env >> _ ) : void  
 
-  var env0 : env = @{
-    buf = ap
+vtypedef http_parse_env(BUFLEN:int,uenv:vt@ype+,buf:addr) = @{
+    buf = arrayptr(char?,buf,BUFLEN)
+  , i = sizeLte(BUFLEN)
+  , line = size_t
+  , colon = intBtwe(~1,BUFLEN)
+  , first_non_whitespace = intBtwe(~1,BUFLEN-2)
+  , last_non_whitespace = intBtwe(~1,BUFLEN-2)
+  , method = Method
+  , version_major = int
+  , version_minor = int
+  , finished = bool
+  , err = bool
+  , uenv = uenv
+  , buflen = size_t BUFLEN
+  }
+
+extern
+fun {uenv:vt@ype+}
+http_parse_env_init{len:nat | len > 2}{buf:addr}( 
+    buf: arrayptr(char?,buf,len)
+  , buflen: size_t len
+  , env: uenv 
+) : http_parse_env(len,uenv,buf)
+
+extern
+fun {uenv:vt@ype+}
+http_parse_env_destroy{len:nat}{buf:addr}( env: http_parse_env(len,uenv,buf) ) 
+  : @( arrayptr(char?,buf,len), uenv )
+
+implement {uenv}
+http_parse_env_init( buf, buflen, uenv ) = @{
+    buf = buf
   , i = i2sz(0)
   , line = i2sz(0)
   , colon = ~1 
@@ -74,16 +99,33 @@ implement main0 () = {
   , version_minor = 0
   , finished = false
   , err = false
+  , uenv = uenv 
+  , buflen = buflen
   }
+
+implement {uenv}
+http_parse_env_destroy( env ) = @( env.buf, env.uenv )
+
+extern
+fun {env:vt@ype+} 
+http_req_parse{n:nat}{buflen:nat}{buf: addr}( 
+    buf: &bytes(n)
+  , sz: size_t n
+  , env: &http_parse_env(buflen,env,buf) 
+) : sizeLte(n) 
+
+
+implement {uenv}
+http_req_parse{n}{buflen}{buf}( req, sz, env0 ) = sz0 where {
  
-  val _ = string_foreach_env<env>( headers, env0 ) where {
+  val sz0 = array_foreach_env<byte><http_parse_env(buflen,uenv,buf)>( req, sz, env0 ) where {
         implement
-        string_foreach$cont<env>( c, env0 ) =
-          ( env0.i != i2sz(BUFLEN) && ~env0.finished && ~env0.err )
+        array_foreach$cont<byte><http_parse_env(buflen,uenv,buf)>( b, env0 ) =
+          ( env0.i != env0.buflen && ~env0.finished && ~env0.err )
 
         implement
-        string_foreach$fwork<env>( c, env0 ) = (
-          if i < i2sz(BUFLEN)
+        array_foreach$fwork<byte><http_parse_env(buflen,uenv,buf)>( b, env0 ) = (
+          if i < buflen
           then (
             ifcase
             | c = '\n' => ( 
@@ -264,17 +306,14 @@ implement main0 () = {
                         }
                         val xs = string_foreach_env<first_line_env>( $UNSAFE.castvwtp1{string len}(env0.buf), env )
                         val e1 = g1ofg0( env.uri_end )
-                        val () = assertloc( e1 < i2sz(BUFLEN) )
+                        val () = assertloc( e1 < buflen )
                         val () = arrayptr_set_at<char?>( env0.buf, e1, '\0' );
+                        val uriptr = $UNSAFE.castvwtp1{Strptr1}(ptr_add<char>(ptrcast(env0.buf), env.uri_begin));
                         val () =
                           if env.success && xs = len 
-                          then (
-                            method_print(stdout_ref,env.method);
-                            print_newline();
-                            println!("URI: ", $UNSAFE.cast{string}(ptr_add<char>(ptrcast(env0.buf), env.uri_begin)) );
-                            println!("HTTP/",env.version_major,".",env.version_minor);
-                          )
+                          then http_req$route<uenv>(env.method, uriptr, @(env.version_major, env.version_minor), env0.uenv)
                           else env0.err := true
+                        prval () = $UNSAFE.cast2void(uriptr)
                       }
                      else ( 
                        if colon >= 0 
@@ -283,12 +322,22 @@ implement main0 () = {
                               arrayptr_set_at<char?>( env0.buf, colon, '\0' );
                               if last_non_whitespace >= 0 
                               then arrayptr_set_at<char?>( env0.buf, last_non_whitespace + 1, '\0' );
-                              println!(line, ": "
-                                  , $UNSAFE.castvwtp1{string}(env0.buf), " ||| "
-                                  , (if first_non_whitespace > ~1 
-                                    then $UNSAFE.cast{string}(ptr_add<char>(ptrcast(env0.buf), first_non_whitespace))
-                                    else "") : string 
-                                );
+                              
+                              let
+                                 val p = (
+                                  if first_non_whitespace > ~1 
+                                  then ptr_add<char>(ptrcast(env0.buf), first_non_whitespace)
+                                  else ptrcast("")
+                                 )
+                                 val kptr = $UNSAFE.castvwtp1{Strptr1}(env0.buf)
+                                 val vptr = $UNSAFE.castvwtp1{Strptr1}(p)
+
+                                 val () = 
+                                  http_req$header<uenv>( kptr, vptr, env0.uenv )
+                                 prval () = $UNSAFE.cast2void(kptr)
+                                 prval () = $UNSAFE.cast2void(vptr)
+                               in
+                              end
                             ) where {
                                 // This was necessary because the `&&` macro obliterates
                                 // constraint solving. Refactored to not need the assertion,
@@ -299,7 +348,6 @@ implement main0 () = {
                        else if first_non_whitespace = ~1
                             then (
                               env0.finished := true;
-                              println!("OK!");
                             )
                             else (
                               env0.err := true;
@@ -314,13 +362,13 @@ implement main0 () = {
                       env0.colon := sz2i(i);
                       env0.i := i + 1;
                     )
-                in ()//println!(c)
+                in ()
                end
             ) 
             | _ => ( 
                let
                    val () = (
-                      if env0.colon != ~1 && ~isspace(c)
+                      if env0.colon != ~1 && ~is_ows(c)
                       then (
                         if env0.first_non_whitespace = ~1 then env0.first_non_whitespace := sz2i(i);
                         env0.last_non_whitespace := sz2i(i); 
@@ -328,20 +376,59 @@ implement main0 () = {
                       arrayptr_set_at<char?>( env0.buf, i, if env0.colon = ~1 && env0.line > 0 then tolower(c) else c );
                       env0.i := i + 1;
                     )
-                in ()//println!(c)
+                in ()
                end
             )
           )
         ) where {
           val i = env0.i
+          val c = $UNSAFE.cast{char}(b)
+          val buflen = env0.buflen
         }
     }
-  
-  val ( pf | p )
-    = arrayptr_unobjectify( pf | env0.buf )
-
-  (** This could be a bug **)
-  prval () = $UNSAFE.cast2void( env0 ) 
-  prval () = view@buf := pf
- 
 }
+
+implement main0 () = {
+  
+  #define BUFLEN 8192
+  var buf = @[char][BUFLEN]()
+
+  val ( pf | ap )
+    = arrayptr_objectify( view@buf | addr@buf )
+
+  var env0 : http_parse_env( BUFLEN, int, buf )
+    = http_parse_env_init<int>( ap, i2sz(BUFLEN), 0 ) 
+
+  stadef hlen = 337
+  val hlen : size_t hlen = string1_length( headers ) 
+  val hp = ptrcast(headers)
+  
+  val (pf0,pff0 | p) = $UNSAFE.ptr0_vtake{bytes(hlen)}( hp )
+
+  val sz = http_req_parse<int>( !p, strlen(headers), env0 )
+    where {
+      implement {e0}
+      http_req$route( method, uri, version, env ) = ( 
+        method_print(stdout_ref,method);
+        print_newline();
+        println!("URI: ", uri );
+        println!("HTTP/",version.0,".",version.1);
+      )
+      implement {e0}
+      http_req$header( k, v, env ) = ( 
+        println!("k: ", k, " | v: ", v );
+      )
+    }
+
+  prval () = pff0(pf0)
+
+  val () = println!("finished? ", env0.finished)
+
+  val @(b0,x) = http_parse_env_destroy<int>( env0 )
+
+  val ( pf | p )
+    = arrayptr_unobjectify( pf | b0 )
+
+  prval () = view@buf := pf
+}
+

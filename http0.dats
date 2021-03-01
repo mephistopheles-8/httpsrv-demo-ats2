@@ -25,6 +25,22 @@ datatype Method =
   | Trace
   | Patch
 
+fn is_uri_char( c : char ) : bool =
+    isalpha(c) || isdigit(c) || 
+    strchr("-._~:/?#[]@!$&'()*+,;=", c) > ~1
+
+fn method_print( fp: FILEref, m : Method ) : void =
+  case m of
+  | Get() => fprint!(fp,"Get")
+  | Post() => fprint!(fp,"Post")
+  | Put() => fprint!(fp,"Put")
+  | Patch() => fprint!(fp,"Patch")
+  | Delete() => fprint!(fp,"Delete")
+  | Connect() => fprint!(fp,"Connect")
+  | Options() => fprint!(fp,"Options")
+  | Head() => fprint!(fp,"Head")
+  | Trace() => fprint!(fp,"Trace")
+
 implement main0 () = {
   #define BUFLEN 8192
   var buf = @[char][BUFLEN]()
@@ -39,7 +55,9 @@ implement main0 () = {
     , colon = intBtwe(~1,BUFLEN)
     , first_non_whitespace = intBtwe(~1,BUFLEN-2)
     , last_non_whitespace = intBtwe(~1,BUFLEN-2)
-   // , method = Method
+    , method = Method
+    , version_major = int
+    , version_minor = int
     , finished = bool
     , err = bool
     }
@@ -51,7 +69,9 @@ implement main0 () = {
   , colon = ~1 
   , first_non_whitespace = ~1 
   , last_non_whitespace = ~1
-  //, method = Get()
+  , method = Get()
+  , version_major = 0
+  , version_minor = 0
   , finished = false
   , err = false
   }
@@ -84,55 +104,176 @@ implement main0 () = {
                       )
                   in if line = 0
                      then {
-                        var env : @(int,string,bool,Method) = @(0,"",false,Get())
-                        implement
-                        string_foreach$cont<(@(int,string,bool,Method))>(c,x) = x.0 != ~1
-                        implement
-                        string_foreach$fwork<(@(int,string,bool,Method))>(c,x) = (
-                          if x.1 = "" && x.0 != 2 
-                          then (  
-                            ifcase
-                             | c0 = 'g' => (x.0 := 2; x.1 := "et"; x.3 := Get())
-                             | c0 = 'h' => (x.0 := 2; x.1 := "ead"; x.3 := Head())
-                             | c0 = 'p' => x.0 := 1
-                             | c0 = 'd' => (x.0 := 2; x.1 := "elete"; x.3 := Delete())
-                             | c0 = 'c' => (x.0 := 2; x.1 := "onnect"; x.3 := Connect())
-                             | c0 = 'o' && x.0 = 0 => (x.0 := 2; x.1 := "ptions"; x.3 := Options())
-                             | c0 = 'o' && x.0 = 1 => (x.0 := 2; x.1 := "st"; x.3 := Post())
-                             | c0 = 't' => (x.0 := 2; x.1 := "race"; x.3 := Trace())
-                             | c0 = 'u' && x.0 = 1 => (x.0 := 2; x.1 := "t"; x.3 := Put())
-                             | c0 = 'a' && x.0 = 1 => (x.0 := 2; x.1 := "tch"; x.3 := Patch())
-                             | _ => x.0 := ~1
-                            )
-                          else 
-                            let
-                               val s1 = g1ofg0(x.1)
-                             in if string_isnot_empty(s1)
-                                then if s1.head() = c0
-                                     then x.1 := s1.tail()
-                                     else x.0 := ~1
-                                else 
-                                  if isspace(c0)
-                                  then x.2 := true
-                                  else x.0 := ~1
-                            end
-                          ) where {
-                            val c0 = tolower(c)
+                        datatype first_line_mode =
+                           | failure 
+                           | method
+                           | method_p
+                           | method_commit
+                           | uri
+                           | http
+                           | version_minor
+                           | version_major
+
+                        typedef first_line_env = @{
+                          state = first_line_mode
+                        , expect = string
+                        , success = bool
+                        , method = Method
+                        , version_major = int
+                        , version_minor = int
+                        , uri_begin = size_t
+                        , uri_end = size_t
+                        , i = size_t
+                        }
+                        var env : first_line_env = @{
+                            state = method()
+                          , expect = ""
+                          , success = false
+                          , method = Get()
+                          , version_major = 0
+                          , version_minor = 0
+                          , uri_begin = i2sz(0) 
+                          , uri_end = i2sz(0)
+                          , i = i2sz(0)
                           }
- 
-                        val _ = string_foreach_env<(@(int,string,bool,Method))>( $UNSAFE.castvwtp1{string len}(env0.buf), env )
+
+                        implement
+                        string_foreach$cont<first_line_env>(c,x) = (
+                          case+ x.state of
+                           | failure() => false
+                           | _ => true
+                        ) 
+                        implement
+                        string_foreach$fwork<first_line_env>(c,x) = {
+                          val c0 = tolower(c) 
+                          val () = (
+                            case+ x.state of
+                             | method() => ( 
+                                  case+ c0 of 
+                                   | 'p' => x.state := method_p()
+                                   | 'g' => (
+                                      x.state := method_commit(); 
+                                      x.expect := "et"; 
+                                      x.method := Get()
+                                    )
+                                   | 'h' => (
+                                      x.state := method_commit(); 
+                                      x.expect := "ead"; 
+                                      x.method := Head()
+                                    ) 
+                                   | 'd' => (
+                                      x.state := method_commit(); 
+                                      x.expect := "elete"; 
+                                      x.method := Delete()
+                                    )
+                                   | 'c' => (
+                                      x.state := method_commit(); 
+                                      x.expect := "onnect"; 
+                                      x.method := Connect()
+                                    )
+                                   | 'o' => (
+                                      x.state := method_commit(); 
+                                      x.expect := "ptions"; 
+                                      x.method := Options()
+                                    ) 
+                                   | 't' => (
+                                      x.state := method_commit(); 
+                                      x.expect := "race"; 
+                                      x.method := Trace()
+                                    )
+                                   | _ => x.state := failure()
+                                  )
+                             | method_p() => (
+                                  case+ c0 of
+                                  | 'o' => (
+                                      x.state := method_commit(); 
+                                      x.expect := "st"; 
+                                      x.method := Post()
+                                    ) 
+                                  | 'u' => (
+                                      x.state := method_commit(); 
+                                      x.expect := "t"; 
+                                      x.method := Put()
+                                    ) 
+                                  | 'a' => (
+                                      x.state := method_commit(); 
+                                      x.expect := "atch"; 
+                                      x.method := Patch()
+                                  ) 
+                                 | _ => x.state := failure()
+                              )
+                             | method_commit() =>
+                                  let
+                                     val s1 = g1ofg0(x.expect)
+                                   in if string_isnot_empty(s1)
+                                      then 
+                                        if s1.head() = c0
+                                        then x.expect := s1.tail()
+                                        else x.state := failure()
+                                      else 
+                                        if c0 = ' '
+                                        then (
+                                          x.state := uri();
+                                          x.uri_begin := x.i + i2sz(1);
+                                          x.uri_end := x.i + i2sz(1);
+                                        )
+                                        else x.state := failure()
+                                  end
+                             | uri() => (
+                                ifcase
+                                 | is_uri_char(c) => () 
+                                 | c = ' ' => (
+                                      x.uri_end := x.i;
+                                      x.state := http();
+                                      x.expect := "http"
+                                  )
+                                 | _ => x.state := failure()  
+                               )
+                             | http() =>  
+                                let
+                                   val s1 = g1ofg0(x.expect)
+                                 in if string_isnot_empty(s1)
+                                    then 
+                                      if s1.head() = c0
+                                      then x.expect := s1.tail()
+                                      else x.state := failure()
+                                    else 
+                                      if c0 = '/'
+                                      then x.state := version_major()
+                                      else x.state := failure()
+                                end
+                             | version_major() => (
+                                  ifcase
+                                   | c = '1' || c = '2' => (
+                                        x.version_major := (if c = '1' then 1 else 2)
+                                     ) 
+                                   | c = '.' => x.state := version_minor()
+                                   | _ => x.state := failure()
+                                )
+                             | version_minor() => (
+                                  ifcase
+                                   | c = '0' || c = '1' => (
+                                        x.version_minor := (if c = '0' then 0 else 1);
+                                        x.success := true;
+                                     ) 
+                                   | _ => x.state := failure()
+                               )
+                             | failure() => ()
+                           )
+                          val () = x.i := x.i + i2sz(1)     
+                        }
+                        val xs = string_foreach_env<first_line_env>( $UNSAFE.castvwtp1{string len}(env0.buf), env )
+                        val e1 = g1ofg0( env.uri_end )
+                        val () = assertloc( e1 < i2sz(BUFLEN) )
+                        val () = arrayptr_set_at<char?>( env0.buf, e1, '\0' );
                         val () =
-                          if env.2 then 
-                            case env.3 of
-                            | Get() => println!("Get")
-                            | Post() => println!("Post")
-                            | Put() => println!("Put")
-                            | Patch() => println!("Patch")
-                            | Delete() => println!("Delete")
-                            | Connect() => println!("Connect")
-                            | Options() => println!("Options")
-                            | Head() => println!("Head")
-                            | Trace() => println!("Trace")
+                          if env.success && xs = len 
+                          then (
+                            method_print(stdout_ref,env.method);
+                            print_newline();
+                            println!("URI: ", $UNSAFE.cast{string}(ptr_add<char>(ptrcast(env0.buf), env.uri_begin)) );
+                            println!("HTTP/",env.version_major,".",env.version_minor);
+                          )
                           else env0.err := true
                       }
                      else ( 
@@ -195,10 +336,12 @@ implement main0 () = {
           val i = env0.i
         }
     }
-
+  
   val ( pf | p )
     = arrayptr_unobjectify( pf | env0.buf )
 
+  (** This could be a bug **)
+  prval () = $UNSAFE.cast2void( env0 ) 
   prval () = view@buf := pf
  
 }

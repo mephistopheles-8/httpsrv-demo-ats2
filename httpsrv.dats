@@ -45,6 +45,73 @@ sockenv$free<client_state>( x ) = ()
 
 macdef SOMAXCONN = $extval(intGt(0), "SOMAXCONN")
 
+
+stadef page_title = 0
+stadef utf8 = 1
+stadef en = 2
+stadef hello_world = 3
+
+stadef document 
+  = doctype'
+  :*: html'(lang$(en) :@: anil
+        , head'(anil,
+              meta'(charset$(utf8) :@: anil) 
+          :*: title'(page_title)
+          :*: enil
+        ) 
+      :*: body'(anil,
+             p'(anil, text'(hello_world) :*: enil)
+         :*: enil
+        )
+      :*: enil
+  ) :*: enil
+
+#define s2m string2mixed
+
+implement (env)
+html5$attr<utf8><env>( x )      = s2m("utf-8")
+implement (env)
+html5$attr<en><env>( x )        = s2m("en")
+
+vtypedef writer(l:addr) = @{
+  buf = arrayptr(byte,l,BUFSZ)
+, i = sizeLte(BUFSZ)
+}
+
+implement (l:addr)
+html5$out<char><writer(l)>( x, c ) = (
+  if i < i2sz(BUFSZ)
+  then ( 
+    arrayptr_set_at<byte>( x.buf, i, $UNSAFE.cast{byte}(c) );
+    x.i := i + i2sz(1)
+  )
+  else ()
+) where {
+  val i = x.i
+}
+
+implement (l:addr)
+html5$out<string><writer(l)>( x, s ) = {
+  val _ = string_foreach_env<writer(l)>( g1ofg0(s), x ) where {
+    implement
+    string_foreach$cont<writer(l)>(c,x) = x.i < i2sz(BUFSZ)
+    implement
+    string_foreach$fwork<writer(l)>(c,x) = html5$out<char><writer(l)>(x,c)
+  } 
+}
+
+implement (l:addr)
+html5$out<strmixed1><writer(l)>( x, sm ) = {
+  val _ = strmixed_foreach<writer(l)>( sm, x ) where {
+    implement
+    strmixed_foreach$cont<writer(l)>(c,x) = x.i < i2sz(BUFSZ)
+    implement
+    strmixed_foreach$fwork<writer(l)>(c,x) = html5$out<char><writer(l)>(x,c)
+  } 
+}
+
+
+
 implement
 evloop$process<client_state>( pool, evts, env ) = (
   case+ info.status of
@@ -81,7 +148,9 @@ evloop$process<client_state>( pool, evts, env ) = (
   | Read() =>
       let
         var linebuf = @[char][BUFSZ]()
-        var buf = @[byte][BUFSZ](i2byte(0))
+        var buf = @[byte][BUFSZ]()
+
+        prval () = b0ytes2bytes( buf )
 
         val ( pf | ap )
           = arrayptr_objectify( view@linebuf | addr@linebuf )
@@ -170,15 +239,80 @@ evloop$process<client_state>( pool, evts, env ) = (
         extern praxi socket_is_conn{fd:int}{st:status}( !sockfd(fd,st) >> sockfd(fd,conn) ) : void
         prval () = socket_is_conn( sock )
 
-        val @(str,n) : [n:nat] @(string n,size_t n) = (
-            case+ info.route of
-            | GetIndex() => @("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 6\r\n\r\nHello!", i2sz(70) )
-            | GetAbout() => @("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 32\r\n\r\nThis is the story about some guy", i2sz(97) )
-            | Err400() => @("HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: 11\r\n\r\nBad Request", i2sz(85) )
-            | _ => @("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\n\r\nNot Found", i2sz(80) )
-          ) : [n:nat] @(string n,size_t n)
+        var outbuf = @[byte][BUFSZ]()
+        prval () = b0ytes2bytes( outbuf )
+        
+        val ( pf | ap )
+          = arrayptr_objectify( view@outbuf | addr@outbuf )
 
-        val ssz = sockfd_write_string( sock, str, n )
+        var wenv : writer(outbuf) = @{
+          buf = ap
+        , i = i2sz(0)
+        }
+
+        val status = (
+          case+ info.route of
+           | GetIndex() =>   
+                (html5_elm_list_out<document><writer(outbuf)>( wenv ); "200 OK") where {
+                  implement (env)
+                  html5$text<page_title><env>( x )  = s2m("Hello world")
+                  implement (env)
+                  html5$text<hello_world><env>( x ) = s2m("Hello world!")
+              }
+           | GetAbout() =>   
+                (html5_elm_list_out<document><writer(outbuf)>( wenv ); "200 OK") where {
+                  implement (env)
+                  html5$text<page_title><env>( x )  = s2m("About")
+                  implement (env)
+                  html5$text<hello_world><env>( x ) = s2m("This is the story about some guy")
+              }
+           | Err400() =>   
+                (html5_elm_list_out<document><writer(outbuf)>( wenv ); "400 Bad Request") where {
+                  implement (env)
+                  html5$text<page_title><env>( x )  = s2m("Bad Request")
+                  implement (env)
+                  html5$text<hello_world><env>( x ) = s2m("Bad Request")
+              }
+           | Err404() =>   
+                (html5_elm_list_out<document><writer(outbuf)>( wenv ); "404 Not Found") where {
+                  implement (env)
+                  html5$text<page_title><env>( x )  = s2m("Not Found")
+                  implement (env)
+                  html5$text<hello_world><env>( x ) = s2m("Not Found")
+              }
+        )  
+
+        val ( pf | p )
+          = arrayptr_unobjectify( pf | wenv.buf )
+        
+        prval () = view@outbuf := pf
+
+        fun html_headers_out{fd:int}( sock: !sockfd(fd,conn), status: string, len: int  )
+          : void
+          = let
+              #define BSZ 256
+              var buf = @[char][BSZ]()
+              typedef
+              cstring = $extype"atstype_string"
+              val bufp = $UNSAFE.cast{cstring}(addr@buf)
+              val n(*int*) =
+                $extfcall(ssize_t, "snprintf", bufp, BSZ
+                  , "HTTP/1.1 %s\r\nContent-Type:text/html\r\nContent-Length: %d\r\n\r\n"
+                  , status, len
+                )
+              val n = g1ofg0(n)
+              val () = assertloc( n > ~1 )
+
+              prval [sz:int] EQINT() = eqint_make_gint( n ) 
+
+              val _ = sockfd_write_string( sock, $UNSAFE.cast{string sz}(bufp) , g1int2uint(n) )
+            in () 
+           end
+
+        val _ = html_headers_out( sock, status, sz2i( wenv.i ) )
+
+        val ssz = sockfd_write( sock, outbuf, wenv.i )
+
         val () = info.status := Read()
         prval () = fold@env
 

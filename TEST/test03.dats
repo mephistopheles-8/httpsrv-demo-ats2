@@ -3,18 +3,6 @@
 staload "./../SATS/sha1.sats"
 staload _ = "./../DATS/sha1.dats"
 
-%{
-static void
-_sha1_print( uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e) 
-{
-  printf("%x %x %x %x %x", a, b, c, d, e);
-}
-%}
-
-extern
-fun _sha1_print( uint32, uint32, uint32, uint32, uint32 ) : void = "mac#"
-
-
 implement main0 () = {
 
     var msg = @[byte][3](
@@ -24,6 +12,7 @@ implement main0 () = {
       )
 
     var output = @[byte][20]()
+    var output_hex = @[char][41]('\0')
 
     val vals0 = sha1( msg, i2sz(3) )
     val () = println!(
@@ -34,5 +23,7 @@ implement main0 () = {
      , " h4 ", vals0.h4
     )
 
-    val () = _sha1_print( vals0.h0, vals0.h1, vals0.h2, vals0.h3, vals0.h4 );
+    val () = sha1hex( output_hex, vals0 )
+    val () = println!($UNSAFE.cast{string}(addr@output_hex))
+
   }

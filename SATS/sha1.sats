@@ -10,3 +10,6 @@ typedef sha1_values = @{
 }
 
 fun {} sha1{n:nat}(msg: &bytes(n), len: size_t n) : sha1_values
+
+fun {} sha1hex( buf: &array(char,41),  vals0 : sha1_values )
+  : void 

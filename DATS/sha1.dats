@@ -12,9 +12,6 @@ uint32_uint( x : uint ) :<> uint32
 implement {}
 sha1{n}( msg, len )
   = let
-
-      (** Integers here should be in "machine" endianness **)
-
 			macdef h0i = 0x67452301U
 			macdef h1i = 0xEFCDAB89U
 			macdef h2i = 0x98BADCFEU
@@ -202,4 +199,53 @@ sha1{n}( msg, len )
         val () = loop( view@msg | buf, ubuf, addr@msg, i2sz(0), len, sha1_values0) 
 
      in sha1_values0 
+    end
+
+fun {} uint32hex(buf: &array(char,8), x: uint32) : void 
+  = let
+        fun loop(buf: &array(char,8), x: uint32, i: sizeLte(8)) 
+        : void =
+         if i < 8
+         then
+          let
+             val hextbl = "0123456789abcdef"
+             val c = hextbl[ g1ofg0(g0uint2uint(x)) mod 16U ]
+             val () = buf[i2sz(7) - i, c]
+           in loop( buf, x/uint32_uint(16U), i + 1)
+          end
+         else ()
+     in loop( buf, x, i2sz(0))
+    end
+
+implement {}
+sha1hex(buf, vals0)
+  = let
+      prval (pfa,pbuf0) = array_v_split_at(view@buf | i2sz(8))
+      prval (pfb,pbuf1) = array_v_split_at(pbuf0 | i2sz(8))
+      prval (pfc,pbuf2) = array_v_split_at(pbuf1 | i2sz(8))
+      prval (pfd,pbuf3) = array_v_split_at(pbuf2 | i2sz(8))
+      prval (pfe,pbuf4) = array_v_split_at(pbuf3 | i2sz(8))
+
+      val pa = addr@buf
+      val pb = ptr_add<char>(addr@buf,i2sz(8))
+      val pc = ptr_add<char>(pb,i2sz(8))
+      val pd = ptr_add<char>(pc,i2sz(8))
+      val pe = ptr_add<char>(pd,i2sz(8))
+
+      val () = uint32hex(!pa,vals0.h0) 
+      val () = uint32hex(!pb,vals0.h1) 
+      val () = uint32hex(!pc,vals0.h2) 
+      val () = uint32hex(!pd,vals0.h3) 
+      val () = uint32hex(!pe,vals0.h4) 
+
+      prval pbuf3 = array_v_unsplit( pfe, pbuf4 )
+      prval pbuf2 = array_v_unsplit( pfd, pbuf3 )
+      prval pbuf1 = array_v_unsplit( pfc, pbuf2 )
+      prval pbuf0 = array_v_unsplit( pfb, pbuf1 )
+      prval pbuf = array_v_unsplit( pfa, pbuf0 )
+
+      prval () = view@buf := pbuf
+
+      val () = buf[i2sz(40), '\0'];
+     in 
     end

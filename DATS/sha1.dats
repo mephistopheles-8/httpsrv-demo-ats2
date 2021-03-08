@@ -44,7 +44,8 @@ sha1{n}( msg, len )
             msg = arrayptr(byte,msg,n)  
           , i = sizeLte(n)
           , n = size_t n
-          , padding = sizeLte(64)
+          , padding = sizeLte(65)
+          , set_one = bool
           }
           prval () = b0ytes2bytes( buf )
           val (pf | ap) = arrayptr_objectify( pfm | msg )
@@ -52,7 +53,8 @@ sha1{n}( msg, len )
               msg = ap
             , i = (if i < n then i else n) : sizeLte(n)
             , n = n
-            , padding = (if i > n then i - n else i2sz(0)) : sizeLte(64)
+            , padding = i2sz(0) //(if i > n then (i - n) else i2sz(0)) : sizeLte(65)
+            , set_one = (i > n)
           }
 
           (** Move the message into the 512-bit block; 
@@ -63,14 +65,14 @@ sha1{n}( msg, len )
             array_foreach$fwork<byte><env>( b, env ) 
               = let
                   val i = env.i
-                  val n = env.n  
+                  val n = env.n 
                  in if i < n
                     then (
                       b := arrayptr_get_at<byte>(env.msg, i); 
                       env.i := i + i2sz(1)
                     )
                     else (
-                      b := (if env.padding = 0 then i2byte(0x80) else i2byte(0)); 
+                      b := (if ~env.set_one then (env.set_one := true; i2byte(0x80)) else i2byte(0));
                       env.padding := ((env.padding + 1) mod i2sz(65))
                     )
                 end

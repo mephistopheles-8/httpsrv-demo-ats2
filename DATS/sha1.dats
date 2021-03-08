@@ -1,12 +1,16 @@
 
+#include "share/atspre_staload.hats"
 #include "./../HATS/project.hats"
 staload "./../SATS/sha1.sats"
 
 fun {} rotl{n:nat | n <= 32}( x: uint32, shift: int n ) : uint32 
   = (x << shift) lor (x >> (32 - shift))
 
+extern castfn
+uint32_uint( x : uint ) :<> uint32
+
 implement {}
-sha1{n}( msg, output, len )
+sha1{n}( msg, len )
   = let
 
       (** Integers here should be in "machine" endianness **)
@@ -17,25 +21,16 @@ sha1{n}( msg, output, len )
 			macdef h3i = 0x10325476U
 			macdef h4i = 0xC3D2E1F0U
 
-			val ml = 8*len
-
       var buf = @[byte][64]()
-      var ubuf = @[uint32][80](g0uint2uint(0U))
+      var ubuf = @[uint32][80](uint32_uint(0U))
 
-      typedef values = @{
-        h0 = uint32 
-      , h1 = uint32 
-      , h2 = uint32 
-      , h3 = uint32 
-      , h4 = uint32 
-      }
 
-      var values0 : values = @{
-          h0 = g0uint2uint(h0i)
-        , h1 = g0uint2uint(h1i)
-        , h2 = g0uint2uint(h2i)
-        , h3 = g0uint2uint(h3i)
-        , h4 = g0uint2uint(h4i)
+      var sha1_values0 : sha1_values = @{
+          h0 = uint32_uint(h0i)
+        , h1 = uint32_uint(h1i)
+        , h2 = uint32_uint(h2i)
+        , h3 = uint32_uint(h3i)
+        , h4 = uint32_uint(h4i)
       }
 
       fun loop{i,n:nat | i <= n + 64}{msg:addr}( 
@@ -45,7 +40,7 @@ sha1{n}( msg, output, len )
         , msg: ptr msg
         , i: size_t i
         , n: size_t n
-        , values0 : &values 
+        , sha1_values0 : &sha1_values 
       ) : void 
       = let
           vtypedef env = @{
@@ -79,7 +74,7 @@ sha1{n}( msg, output, len )
                     )
                     else (
                       b := (if env.padding = 0 then i2byte(0x80) else i2byte(0)); 
-                      env.padding := ((env.padding + 1) mod i2sz(64))
+                      env.padding := ((env.padding + 1) mod i2sz(65))
                     )
                 end
           }
@@ -94,24 +89,24 @@ sha1{n}( msg, output, len )
           val padding = env0.padding
 
           val () = (
-            if padding >= 5
+            if padding >= 9
             then 
              let
                 val ml = n*8
                 var loop 
-                  = fix@loop( buf: &bytes(64), i : sizeLte(4), ml: size_t ) 
+                  = fix@loop( buf: &bytes(64), i : sizeLte(8), ml: size_t ) 
                   : void => ( 
                     if i > 0
                     then 
                      let
                         val () = buf[i2sz(64) - i] := (
-                          i2byte( sz2i(ml land i2sz(0xFF)) )
+                          i2byte( sz2i((ml >> 8*sz2i(i - 1)) land i2sz(0xFF)) )
                         )
-                      in loop(buf, i - 1, ml >> 8)
+                      in loop(buf, i - 1, ml)
                      end
                     else () 
                   )         
-              in loop( buf, i2sz(4), ml )
+              in loop( buf, i2sz(8), ml )
              end
             else ()
           ) 
@@ -131,7 +126,7 @@ sha1{n}( msg, output, len )
                      val b3 = byte2uint0(msg[i*4 + 3])
 
                      (* Need to verify; I think this is correct *) 
-                     val u : uint32 =  g0uint2uint( (b0 << 24) lor (b1 << 16) lor (b2 << 8) lor b3 )
+                     val u : uint32 =  uint32_uint( (b0 << 24) lor (b1 << 16) lor (b2 << 8) lor b3 )
 
                      val () = buf[i,u]
                   in loop0( msg, buf, i + i2sz(1))
@@ -146,12 +141,12 @@ sha1{n}( msg, output, len )
           prval () = b0ytes2bytes( buf )
           val () = loop0( buf, ubuf, i2sz(0) )
 
-          (** Calculate values and integrate **)
-          var state : values = values0
+          (** Calculate sha1_values and integrate **)
+          var state : sha1_values = sha1_values0
 
-          val _ = array_iforeach_env<uint32><values>( ubuf, i2sz(80), state ) where {
+          val _ = array_iforeach_env<uint32><sha1_values>( ubuf, i2sz(80), state ) where {
             implement
-            array_iforeach$fwork<uint32><values>( i, w, env ) =
+            array_iforeach$fwork<uint32><sha1_values>( i, w, env ) =
               let
                   val a = env.h0
                   val b = env.h1
@@ -164,19 +159,19 @@ sha1{n}( msg, output, len )
                       ifcase
                       | i < 20 => @(f,k) where {
                             val f = (b land c) lor ((lnot b) land d)
-                            val k = g0uint2uint(0x5A827999U)
+                            val k = uint32_uint(0x5A827999U)
                           } 
                       | i < 40 => @(f,k) where {
                             val f = (b lxor c lxor d)
-                            val k = g0uint2uint(0x6ED9EBA1U)
+                            val k = uint32_uint(0x6ED9EBA1U)
                          }
                       | i < 60 => @(f,k) where {
                             val f = (b land c) lor (b land d) lor (c land d)
-                            val k = g0uint2uint(0x8F1BBCDCU)
+                            val k = uint32_uint(0x8F1BBCDCU)
                         }
                       | _ => @(f,k) where {
                             val f = (b lxor c lxor d)
-                            val k = g0uint2uint(0xCA62C1D6U)
+                            val k = uint32_uint(0xCA62C1D6U)
                        }
                     ) : @(uint32,uint32)
                   val tmp = rotl(a,5) + f + e + k + w
@@ -191,23 +186,20 @@ sha1{n}( msg, output, len )
               end 
           }
 
-          val () = values0 := @{
-            h0 = state.h0 + values0.h0
-          , h1 = state.h1 + values0.h1
-          , h2 = state.h2 + values0.h2
-          , h3 = state.h3 + values0.h3
-          , h4 = state.h4 + values0.h4
+          val () = sha1_values0 := @{
+            h0 = state.h0 + sha1_values0.h0
+          , h1 = state.h1 + sha1_values0.h1
+          , h2 = state.h2 + sha1_values0.h2
+          , h3 = state.h3 + sha1_values0.h3
+          , h4 = state.h4 + sha1_values0.h4
           }
 
-        in if padding < 5
-           then loop( pfm | buf, ubuf, msg, i1 + padding, n, values0)
+        in if padding < 9
+           then loop( pfm | buf, ubuf, msg, i1 + padding, n, sha1_values0)
            else ()
        end 
       
+        val () = loop( view@msg | buf, ubuf, addr@msg, i2sz(0), len, sha1_values0) 
 
-        val () = loop( view@msg | buf, ubuf, addr@msg, i2sz(0), len, values0) 
-
-        prval () = b0ytes2bytes( output )
-        (** TODO: write result to buf **)
-     in 
+     in sha1_values0 
     end

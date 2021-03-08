@@ -53,7 +53,7 @@ sha1{n}( msg, len )
               msg = ap
             , i = (if i < n then i else n) : sizeLte(n)
             , n = n
-            , padding = i2sz(0) //(if i > n then (i - n) else i2sz(0)) : sizeLte(65)
+            , padding = i2sz(0) 
             , set_one = (i > n)
           }
 
@@ -220,8 +220,8 @@ fun {} uint32hex(buf: &array(char,8), x: uint32) : void
     end
 
 implement {}
-sha1hex(buf, vals0)
-  = let
+sha1hex(buf, vals0) =
+    let
       prval (pfa,pbuf0) = array_v_split_at(view@buf | i2sz(8))
       prval (pfb,pbuf1) = array_v_split_at(pbuf0 | i2sz(8))
       prval (pfc,pbuf2) = array_v_split_at(pbuf1 | i2sz(8))
@@ -229,7 +229,7 @@ sha1hex(buf, vals0)
       prval (pfe,pbuf4) = array_v_split_at(pbuf3 | i2sz(8))
 
       val pa = addr@buf
-      val pb = ptr_add<char>(addr@buf,i2sz(8))
+      val pb = ptr_add<char>(pa,i2sz(8))
       val pc = ptr_add<char>(pb,i2sz(8))
       val pd = ptr_add<char>(pc,i2sz(8))
       val pe = ptr_add<char>(pd,i2sz(8))
@@ -251,3 +251,31 @@ sha1hex(buf, vals0)
       val () = buf[i2sz(40), '\0'];
      in 
     end
+
+implement {}
+sha1bin(buf, vals0) =
+    let
+        var vals1 = @[uint32][5](
+          vals0.h0
+        , vals0.h1
+        , vals0.h2
+        , vals0.h3
+        , vals0.h4
+        )
+
+        prval () = b0ytes2bytes( buf )
+
+        fun loop( buf: &bytes(20), i : sizeLte(20), vals1: &array(uint32,5) )
+          : void =
+            if i < 20
+            then
+             let
+                 val m = g0uint2uint(vals1[i/i2sz(4)] >> (8*(3 - g1uint2int(i mod i2sz(4))))) land 0xFFU
+              in buf[i] := i2byte(m);
+                 loop(buf, i + 1, vals1)
+             end
+            else ()
+
+     in loop( buf, i2sz(0), vals1 )
+    end
+

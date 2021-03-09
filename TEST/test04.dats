@@ -29,7 +29,7 @@ implement main0 () = {
 
     val () = sha1bin( output_bin, vals0 )
     val (pb640,pb641 | m0) = base64_encode( view@output_b64 | output_bin, addr@output_b64, i2sz(20) )
-
+    val () = println!("m0: ", m0)
     val () = println!( $UNSAFE.cast{string}(addr@output_b64) )
 
     prval () = __assert(pb640) where {

@@ -1,9 +1,6 @@
 
 #include "share/atspre_staload.hats"
-staload "./../SATS/websocket.sats"
-staload _ = "./../DATS/websocket.dats"
-staload _ = "./../DATS/base64.dats"
-staload _ = "./../DATS/sha1.dats"
+#include "./../mylibies.hats"
 
 implement main0 () = {
     (** len : 24 **)

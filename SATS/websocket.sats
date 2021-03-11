@@ -25,6 +25,10 @@ vtypedef ws_frame_parser(l:addr,n:int) = @{
 , k = ullint // position in payload
 } 
 
+fun {} ws_frame_parser_init{l:addr}{n:nat}( arrayptr(byte,l,n), size_t n ) : ws_frame_parser(l,n)
+fun {} ws_frame_parser_destroy{l:addr}{n:nat}( ws_frame_parser(l,n) ) : arrayptr(byte,l,n)
+fun {} ws_frame_parser_reset_buf{l:addr}{n:nat}( &ws_frame_parser(l,n) ) : void
+
 fun {} ws_handshake_accept( 
     sec_websocket_key: &array(char,24)
   , sec_websocket_accept: &array(char?,29) >> array(char,29) 

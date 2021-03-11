@@ -9,6 +9,28 @@ staload "./../SATS/websocket.sats"
 #define WS_UUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 implement {}
+ws_frame_parser_init (ap,sz) = @{
+      is_fin = false
+    , opcode = 0U
+    , is_masked = false
+    , payload_begun = false
+    , masking_key = 0U
+    , payload_length = 0LLU
+    , payload_length_size = 0
+    , buf = ap
+    , bufsz = sz
+    , j = i2sz(0)
+    , i = 0LLU
+    , k = 0LLU
+  }
+
+implement {}
+ws_frame_parser_destroy( wfp ) = wfp.buf
+
+implement {}
+ws_frame_parser_reset_buf (wfp) = wfp.j := i2sz(0)
+
+implement {}
 ws_handshake_accept( sec_websocket_key, sec_websocket_accept ) =
   let
       var buf = @[char][60]()
@@ -77,8 +99,8 @@ ws_handshake_accept( sec_websocket_key, sec_websocket_accept ) =
 implement {}
 ws_frame_parse{n,bsz}{l}( buf, n, env ) = (
     ifcase
-     | env.j = env.bufsz => ws_buffer_full()
      | env.payload_begun && env.k = env.payload_length => ws_success()
+     | env.j = env.bufsz => ws_buffer_full()
      | _ => ws_continue() 
   ) where {
     val _ = array_foreach_env<byte><ws_frame_parser(l,bsz)>( buf, n, env ) where {
@@ -134,7 +156,7 @@ ws_frame_parse{n,bsz}{l}( buf, n, env ) = (
                   val j = env.j
                   val bsz = env.bufsz
                   val i0 = $UNSAFE.cast{size_t}(
-                      g0uint2int(i) - 2 - env.payload_length_size - 4
+                      $UNSAFE.cast{int}(i)- 2 - env.payload_length_size - 4
                     ) 
                   val b1 = 
                     b0 lxor (

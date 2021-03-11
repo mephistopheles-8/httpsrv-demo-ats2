@@ -467,11 +467,19 @@ evloop$process<client_state>( pool, evts, env ) = (
   | Ws () => {
         val () = println!("WS activity")
         var buf = @[byte][BUFSZ]()
+        var msgbuf = @[byte][BUFSZ]()
+        prval () = b0ytes2bytes( msgbuf )
+
+        val (pfap | ap) = arrayptr_objectify( view@msgbuf | addr@msgbuf )
+
+        var penv : ws_frame_parser(msgbuf,BUFSZ) 
+          = ws_frame_parser_init( ap, i2sz(BUFSZ) )
         
         fun loop{fd:int}{n:nat}(
                sock : &sockfd(fd,conn)
              , buf: &array(byte,n)
              , sz : size_t n
+             , penv: &ws_frame_parser(msgbuf,BUFSZ)
         ) : bool 
          = let
               val ssz = sockfd_read(sock,buf,sz) 
@@ -479,108 +487,64 @@ evloop$process<client_state>( pool, evts, env ) = (
                 let
                   prval (pf1,pf2) = array_v_split_at( view@buf | g1int2uint(ssz) )
 
-                  typedef ws_parser = @{
-                    is_fin = bool
-                  , opcode = uint
-                  , is_masked = bool
-                  , masking_key = uint
-                  , payload_length = ullint
-                  , payload_length_size = intLte(16)
-                  }
+                  val status = ws_frame_parse( buf, g1int2uint( ssz ), penv )
 
-                  var penv : ws_parser = @{
-                    is_fin = false
-                  , opcode = 0U
-                  , is_masked = false
-                  , masking_key = 0U
-                  , payload_length = 0LLU
-                  , payload_length_size = 0
-                  }
-
-                  val _ = array_iforeach_env<byte><ws_parser>( buf, g1int2uint( ssz ), penv ) where {
-                    implement 
-                    array_iforeach$fwork<byte><ws_parser>( i, b, env ) = (
-                          ifcase
-                           | i = 0 =>
-                              let
-                                  val is_fin = (b0 >> 7) = 1U
-                                  val opcode = b0 land 0xFU
-                               in
-                                 if is_fin then print!("FIN: ") else print!("NOT FIN: ");
-                                 (case+ opcode of
-                                  | 0x0U => print!("CONTINUATION: ")
-                                  | 0x1U => print!("TEXT: ")
-                                  | 0x2U => print!("BIN: ")
-                                  | 0x8U => print!("CLOSE: ")
-                                  | 0x9U => print!("PING: ")
-                                  | 0xAU => print!("PONG: ")
-                                  | _ => print!("UNKNOWN: ")
-                                 );
-                                 env.is_fin := is_fin;
-                                 env.opcode := opcode;
-                              end
-                           | i = 1 =>
-                              let
-                                  val is_masked = (b0 >> 7) = 1U
-                                  val payload_length = b0 land 0x7FU
-                                  val () = env.is_masked := is_masked
-                                  val () = if is_masked then print!("Masked: ")
-                               in ifcase
-                                   | payload_length = 0x7F => (
-                                        env.payload_length_size := 8;
-                                      )
-                                   | payload_length = 0x7D => (
-                                        env.payload_length_size := 2;
-                                      )
-                                   | _ => (
-                                      env.payload_length := g0uint2uint( payload_length );
-                                      env.payload_length_size := 0;
-                                    )
-                              end
-                           | i >= 2 && i < 10 && env.payload_length_size = 8 => (
-                                env.payload_length := (env.payload_length << 8) lor g0uint2uint(b0)
-                              )
-                           | i >= 2 && i < 4 && env.payload_length_size = 2 => (
-                                env.payload_length := (env.payload_length << 8) lor g0uint2uint(b0)
-                            )
-                           | env.is_masked &&
-                             i >= (2 + env.payload_length_size) && 
-                             i < (2 + env.payload_length_size + 4) => (
-                                env.masking_key := (env.masking_key << 8) lor b0;
-                            ) 
-                           | env.is_masked => print!(
-                              $UNSAFE.cast{char}(
-                                  b0 lxor (
-                                    (env.masking_key >> 8*(3 - ($UNSAFE.cast{intBtwe(0,3)}(i0 mod i2sz(4))) )) land 0xFFU
-                                  )
-                                )
-                              ) where {
-                                val i0 = $UNSAFE.cast{size_t}(sz2i(i) - 2 - env.payload_length_size - 4) 
-                              }
-                           | _ => print!($UNSAFE.cast{char}(b0)) 
-                                   
-                        ) where {
-                          val b0 = byte2uint0( b )
-                        } 
-                  }
-                  val () = print_newline()
                   prval () = view@buf := array_v_unsplit( pf1, pf2 )
-                in loop(sock,buf,sz)
+
+                in case+ status of
+                  | ws_success() => true where {
+                      val j = penv.j
+                      val bsz = penv.bufsz
+                      val () = (
+                        if j < bsz
+                        then begin
+                           println!("Success");
+                           (case+ penv.opcode of
+                            | 0x0U => print!("CONTINUATION: ")
+                            | 0x1U => print!("TEXT: ")
+                            | 0x2U => print!("BIN: ")
+                            | 0x8U => print!("CLOSE: ")
+                            | 0x9U => print!("PING: ")
+                            | 0xAU => print!("PONG: ")
+                            | _ => print!("UNKNOWN: ")
+                           );
+                           arrayptr_set_at<byte>(penv.buf, j, i2byte(0));
+                           println!( $UNSAFE.cast{string}(ptrcast(penv.buf) ) ); 
+                          end 
+                        else ()
+                      )
+                    }
+                  | ws_continue() => loop(sock,buf,sz,penv)
+                  | ws_buffer_full() => (ws_frame_parser_reset_buf(penv); loop(sock,buf,sz,penv))
                 end
               else  ifcase
-                    | ssz = 0 => true 
+                    | ssz = 0 => false 
                       (* I think we need to block here until 
                         we store the HTTP parser state somewhere *)
-                    | the_errno_test(EAGAIN) => false // loop(sock,buf,sz)
+                    | the_errno_test(EAGAIN) => true // loop(sock,buf,sz)
                       (*  keep_open() *) 
-                    | _ => true 
+                    | _ => false
            end
 
         prval () = b0ytes2bytes( buf )
         prval () = socket_is_conn( sock )
-        val _ = loop( sock, buf, i2sz(BUFSZ) )
+        val b0 = loop( sock, buf, i2sz(BUFSZ), penv )
+
+        val ap = ws_frame_parser_destroy( penv )
+
+        val (pfmb | p) = arrayptr_unobjectify( pfap | ap )
+        prval () = view@msgbuf := pfmb
+
         prval () = fold@env
-        val () = assertloc( evloop_events_mod( pool, EvtR(), env) )
+        val () = 
+          if b0
+          then {
+            val () = assertloc( evloop_events_mod( pool, EvtR(), env) )
+          }
+          else {
+            val () = assertloc( evloop_events_dispose{client_state}( pool, env ) )
+          }
+        
     }
 ) where {
   val @CLIENT(sock,data,info) = env

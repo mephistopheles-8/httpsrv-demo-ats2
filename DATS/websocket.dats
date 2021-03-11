@@ -1,4 +1,6 @@
+
 #include "./../HATS/project.hats"
+#include "share/atspre_staload.hats"
 
 staload "./../SATS/base64.sats"
 staload "./../SATS/sha1.sats"
@@ -72,4 +74,99 @@ ws_handshake_accept( sec_websocket_key, sec_websocket_accept ) =
    in
   end
 
+implement {}
+ws_frame_parse{n,bsz}{l}( buf, n, env ) = (
+    ifcase
+     | env.j = env.bufsz => ws_buffer_full()
+     | env.payload_begun && env.k = env.payload_length => ws_success()
+     | _ => ws_continue() 
+  ) where {
+    val _ = array_foreach_env<byte><ws_frame_parser(l,bsz)>( buf, n, env ) where {
+      implement 
+      array_foreach$cont<byte><ws_frame_parser(l,bsz)>( b, env ) = (
+        env.j < env.bufsz && ( ~env.payload_begun || env.k < env.payload_length )
+      )
+      implement 
+      array_foreach$fwork<byte><ws_frame_parser(l,bsz)>( b, env ) = (
+            ifcase
+             | i = 0 =>
+                let
+                    val is_fin = (b0 >> 7) = 1U
+                    val opcode = g1ofg0(b0) mod 16U
+                 in
+                   env.is_fin := is_fin;
+                   env.opcode := opcode;
+                end
+             | i = 1 =>
+                let
+                    val is_masked = (b0 >> 7) = 1U
+                    val payload_length = b0 land 0x7FU
+                    val () = env.is_masked := is_masked
+                 in ifcase
+                     | payload_length = 0x7F => (
+                          env.payload_length_size := 8;
+                        )
+                     | payload_length = 0x7D => (
+                          env.payload_length_size := 2;
+                        )
+                     | _ => (
+                        env.payload_length := g0uint2uint( payload_length );
+                        env.payload_length_size := 0;
+                        if ~is_masked then env.payload_begun := true;
+                      )
+                end
+             | i >= 2 && i < 10 && env.payload_length_size = 8 => (
+                  env.payload_length := (env.payload_length << 8) lor g0uint2uint(b0);
+                  if i = 9 && ~env.is_masked then env.payload_begun := true;
+                )
+             | i >= 2 && i < 4 && env.payload_length_size = 2 => (
+                  env.payload_length := (env.payload_length << 8) lor g0uint2uint(b0);
+                  if i = 3 && ~env.is_masked then env.payload_begun := true;
+              )
+             | env.is_masked &&
+               i >= (2 + env.payload_length_size) && 
+               i < (2 + env.payload_length_size + 4) => (
+                  env.masking_key := (env.masking_key << 8) lor b0;
+                  if i = (2 + env.payload_length_size + 3) then env.payload_begun := true;
+              ) 
+             | env.is_masked => 
+               let
+                  val j = env.j
+                  val bsz = env.bufsz
+                  val i0 = $UNSAFE.cast{size_t}(
+                      g0uint2int(i) - 2 - env.payload_length_size - 4
+                    ) 
+                  val b1 = 
+                    b0 lxor (
+                      (env.masking_key >> 8*(
+                         3 - ($UNSAFE.cast{intBtwe(0,3)}(i0 mod i2sz(4))) 
+                       )
+                      ) land 0xFFU
+                    )
 
+                in if j < bsz
+                   then begin 
+                    arrayptr_set_at<byte>( env.buf, j, i2byte(b1) );
+                    env.j := j + 1;
+                    env.k := env.k + 1LLU;
+                   end
+               end  
+             | _ => 
+               let
+                  val j = env.j
+                  val bsz = env.bufsz
+                in if j < bsz
+                   then begin 
+                    arrayptr_set_at<byte>( env.buf, j, b );
+                    env.j := j + 1;
+                    env.k := env.k + 1LLU;
+                   end
+               end 
+          ) where {
+            val b0 = byte2uint0( b )
+            val i = env.i
+            val () = env.i := i + 1LLU
+          } 
+    }
+
+  }

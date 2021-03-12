@@ -107,6 +107,9 @@ html5$script<ws_test><env>( x )      = s2m("
         console.log(\"fire\");
       }, 1000);
     });
+   ws.addEventListener(\"message\", (e) => {
+      console.log(e.data);
+   });
   })()
 ")
 
@@ -535,13 +538,27 @@ evloop$process<client_state>( pool, evts, env ) = (
         val (pfmb | p) = arrayptr_unobjectify( pfap | ap )
         prval () = view@msgbuf := pfmb
 
-        prval () = fold@env
         val () = 
           if b0
           then {
+            var resp = @[byte][8](
+                i2byte(0x81)
+              , i2byte(0x06)
+              , $UNSAFE.cast{byte}('H') 
+              , $UNSAFE.cast{byte}('e') 
+              , $UNSAFE.cast{byte}('l') 
+              , $UNSAFE.cast{byte}('l') 
+              , $UNSAFE.cast{byte}('o') 
+              , $UNSAFE.cast{byte}('!') 
+              )
+            val ssz = sockfd_write( sock, resp, i2sz(8) )
+
+            prval () = fold@env
+          
             val () = assertloc( evloop_events_mod( pool, EvtR(), env) )
           }
           else {
+            prval () = fold@env
             val () = assertloc( evloop_events_dispose{client_state}( pool, env ) )
           }
         

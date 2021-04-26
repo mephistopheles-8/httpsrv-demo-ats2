@@ -1,0 +1,3 @@
+[submodule "evloop"]
+	path = evloop
+	url = https://github.com/mephistopheles-8/evloop-ats2

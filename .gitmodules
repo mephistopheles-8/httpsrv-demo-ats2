@@ -1,3 +1,6 @@
 [submodule "evloop"]
 	path = evloop
 	url = https://github.com/mephistopheles-8/evloop-ats2
+[submodule "atshtml"]
+	path = atshtml
+	url = https://github.com/mephistopheles-8/atshtml

@@ -4,7 +4,7 @@
 #define ASYNCNET_EPOLL
 #include "share/atspre_staload.hats"
 
-#define M88_targetloc "./../"
+#define M88_targetloc "."
 #include "{$M88}/evloop/mylibies.hats"
 #include "{$M88}/http/mylibies.hats"
 #include "{$M88}/atshtml/mylibies.hats"

@@ -26,13 +26,25 @@ datatype conn_status =
   | Listen
   | Read
   | Write
+  | Ws
 
-datatype Route =
+datavtype Route =
   | Err404
   | Err400
   | GetIndex
   | GetAbout
- 
+  | GetWs of ( uint, Strptr0 )
+
+fn route_free( r: Route ) : void =
+  case+ r of
+  | ~Err404 () => ()
+  | ~Err400 () => ()
+  | ~GetIndex () => ()
+  | ~GetAbout () => ()
+  | ~GetWs (_, sec_ws_acc_opt) => (
+      free( sec_ws_acc_opt )
+  )
+
 vtypedef client_state = @{
     status = conn_status
   , bytes_read = size_t
@@ -41,26 +53,31 @@ vtypedef client_state = @{
   }
 
 implement 
-sockenv$free<client_state>( x ) = ()
+sockenv$free<client_state>( x ) = route_free( x.route )
 
 macdef SOMAXCONN = $extval(intGt(0), "SOMAXCONN")
 
 
-stadef page_title = 0
-stadef utf8 = 1
-stadef en = 2
-stadef hello_world = 3
+stacst page_title : int
+stacst utf8 : int
+stacst en : int
+stacst hello_world : int
+stacst ws_test : int
+stacst viewport : int
+stacst default_viewport : int
 
 stadef document 
   = doctype'
   :*: html'(lang$(en) :@: anil
         , head'(anil,
-              meta'(charset$(utf8) :@: anil) 
+              meta'(charset$(utf8) :@: anil)
+          :*: meta'(name$(viewport) :@: content$(default_viewport) :@: anil) 
           :*: title'(page_title)
           :*: enil
         ) 
       :*: body'(anil,
              p'(anil, text'(hello_world) :*: enil)
+         :*: script'(anil,ws_test)
          :*: enil
         )
       :*: enil
@@ -69,9 +86,32 @@ stadef document
 #define s2m string2mixed
 
 implement (env)
-html5$attr<utf8><env>( x )      = s2m("utf-8")
+html5$attr<en><env>( x ) 
+  = s2m("en")
 implement (env)
-html5$attr<en><env>( x )        = s2m("en")
+html5$attr<utf8><env>( x )
+  = s2m("utf-8")
+implement (env)
+html5$attr<viewport><env>( x )
+  = s2m("viewport")
+implement (env)
+html5$attr<default_viewport><env>( x )  
+  = s2m("width=device-width, initial-scale=1.0")
+implement (env)
+html5$script<ws_test><env>( x )      = s2m("
+  (function () {
+    var ws = new WebSocket(\"ws://localhost:8888/ws\");
+    ws.addEventListener( \"open\", () => {
+      setInterval( () => {
+        ws.send(\"Hello!\");
+        console.log(\"fire\");
+      }, 1000);
+    });
+   ws.addEventListener(\"message\", (e) => {
+      console.log(e.data);
+   });
+  })()
+")
 
 vtypedef writer(l:addr) = @{
   buf = arrayptr(byte,l,BUFSZ)
@@ -111,6 +151,8 @@ html5$out<strmixed1><writer(l)>( x, sm ) = {
 }
 
 
+extern praxi socket_is_conn{fd:int}{st:status}( !sockfd(fd,st) >> sockfd(fd,conn) ) : void
+extern praxi socket_is_listening{fd:int}{st:status}( !sockfd(fd,st) >> sockfd(fd,listen) ) : void
 
 implement
 evloop$process<client_state>( pool, evts, env ) = (
@@ -138,7 +180,6 @@ evloop$process<client_state>( pool, evts, env ) = (
               }
             var senv = sockenv_create<client_state>( cfd, cinfo )
           }
-          extern praxi socket_is_listening{fd:int}{st:status}( !sockfd(fd,st) >> sockfd(fd,listen) ) : void
           prval () = socket_is_listening( sock )
 
           val ()   = sockfd_accept_all<evloop(client_state)>(sock, pool)
@@ -179,15 +220,43 @@ evloop$process<client_state>( pool, evts, env ) = (
                     where {
                       implement
                       http_req$route<Route>( method, uri, version, env ) = (
+                        route_free( env );
                         ifcase
                          | uri = "/" => (env := GetIndex()) 
                          | uri = "/index" => (env := GetIndex()) 
                          | uri = "/about" => (env := GetAbout())
+                         | uri = "/ws" => (env := GetWs(0U, strptr_null()))
                          | _ => (env := Err404())
                       ) 
-                      implement {e0}
-                      http_req$header( k, v, env ) = ( 
-                       (* println!("k: ", k, " | v: ", v ); *)
+                      implement
+                      http_req$header<Route>( k, v, env ) = (
+                        case+ env of
+                        | @GetWs(s,sec_ws_key_opt) => (
+                            ifcase
+                            | k = "upgrade" => {
+                                val () = s := (s lor 1U)
+                                prval () = fold@env
+                              } 
+                            | k = "connection" => {
+                                val () = s := (s lor 2U)
+                                prval () = fold@env
+                              } 
+                            | k = "sec-websocket-key" => {
+                                val () = s := (s lor 4U)
+                                (** FIXME: could probably do verification here **)
+                                val () = free( sec_ws_key_opt )
+                                val () = sec_ws_key_opt := copy(v)
+                                prval () = fold@env
+                              } 
+                            | k = "sec-websocket-version" => {
+                                val () = s := (s lor 8U)
+                                prval () = fold@env
+                              }
+                            | _ => {
+                                prval () = fold@env
+                            }
+                          )
+                       | _ => ()  
                       )
                     }
 
@@ -206,14 +275,13 @@ evloop$process<client_state>( pool, evts, env ) = (
                     | _ => close_sock() 
            end
 
-         prval () = socket_is_conn( sock ) where {
-            extern praxi socket_is_conn{fd:int}{st:status}( !sockfd(fd,st) >> sockfd(fd,conn) ) : void
-         }
+         prval () = socket_is_conn( sock )
+         
          val b = loop(sock, buf, i2sz(BUFSZ), env0 ) 
 
         val @(b0,route) = http_parse_env_destroy<Route>( env0 )
 
-        val () = info.route := route 
+        val () = (route_free(info.route); info.route := route) 
 
         val ( pf | p )
           = arrayptr_unobjectify( pf | b0 )
@@ -236,57 +304,6 @@ evloop$process<client_state>( pool, evts, env ) = (
       end
   | Write() =>
       let
-        extern praxi socket_is_conn{fd:int}{st:status}( !sockfd(fd,st) >> sockfd(fd,conn) ) : void
-        prval () = socket_is_conn( sock )
-
-        var outbuf = @[byte][BUFSZ]()
-        prval () = b0ytes2bytes( outbuf )
-        
-        val ( pf | ap )
-          = arrayptr_objectify( view@outbuf | addr@outbuf )
-
-        var wenv : writer(outbuf) = @{
-          buf = ap
-        , i = i2sz(0)
-        }
-
-        val status = (
-          case+ info.route of
-           | GetIndex() =>   
-                (html5_elm_list_out<document><writer(outbuf)>( wenv ); "200 OK") where {
-                  implement (env)
-                  html5$text<page_title><env>( x )  = s2m("Hello world")
-                  implement (env)
-                  html5$text<hello_world><env>( x ) = s2m("Hello world!")
-              }
-           | GetAbout() =>   
-                (html5_elm_list_out<document><writer(outbuf)>( wenv ); "200 OK") where {
-                  implement (env)
-                  html5$text<page_title><env>( x )  = s2m("About")
-                  implement (env)
-                  html5$text<hello_world><env>( x ) = s2m("This is the story about some guy")
-              }
-           | Err400() =>   
-                (html5_elm_list_out<document><writer(outbuf)>( wenv ); "400 Bad Request") where {
-                  implement (env)
-                  html5$text<page_title><env>( x )  = s2m("Bad Request")
-                  implement (env)
-                  html5$text<hello_world><env>( x ) = s2m("Bad Request")
-              }
-           | Err404() =>   
-                (html5_elm_list_out<document><writer(outbuf)>( wenv ); "404 Not Found") where {
-                  implement (env)
-                  html5$text<page_title><env>( x )  = s2m("Not Found")
-                  implement (env)
-                  html5$text<hello_world><env>( x ) = s2m("Not Found")
-              }
-        )  
-
-        val ( pf | p )
-          = arrayptr_unobjectify( pf | wenv.buf )
-        
-        prval () = view@outbuf := pf
-
         fun html_headers_out{fd:int}( sock: !sockfd(fd,conn), status: string, len: int  )
           : void
           = let
@@ -308,18 +325,244 @@ evloop$process<client_state>( pool, evts, env ) = (
               val _ = sockfd_write_string( sock, $UNSAFE.cast{string sz}(bufp) , g1int2uint(n) )
             in () 
            end
+        
+        fun ws_headers_out{fd:int}( sock: !sockfd(fd,conn), resp: &array(char,29)  )
+          : void
+          = let
+              #define BSZ 256
+              var buf = @[char][BSZ]()
+              typedef
+              cstring = $extype"atstype_string"
+              val bufp = $UNSAFE.cast{cstring}(addr@buf)
+              val n(*int*) =
+                $extfcall(ssize_t, "snprintf", bufp, BSZ
+                  , "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-Websocket-Accept: %s\r\n\r\n"
+                  , $UNSAFE.cast{cstring}( addr@resp )
+                )
+              val n = g1ofg0(n)
+              val () = assertloc( n > ~1 )
 
-        val _ = html_headers_out( sock, status, sz2i( wenv.i ) )
+              prval [sz:int] EQINT() = eqint_make_gint( n ) 
 
-        val ssz = sockfd_write( sock, outbuf, wenv.i )
+              val _ = sockfd_write_string( sock, $UNSAFE.cast{string sz}(bufp) , g1int2uint(n) )
+            in () 
+           end
 
-        val () = info.status := Read()
+
+        var outbuf = @[byte][BUFSZ]()
+        prval () = b0ytes2bytes( outbuf )
+        
+        val ( pf | ap )
+          = arrayptr_objectify( view@outbuf | addr@outbuf )
+
+        var wenv : writer(outbuf) = @{
+          buf = ap
+        , i = i2sz(0)
+        }
+
+        prval () = socket_is_conn( sock )
+
+        fun response{fd:int}{outbuf:addr}( r0: !Route, sock: !sockfd(fd,conn), wenv: &writer(outbuf)  )
+          : void = (
+            case+ r0 of
+             | GetIndex() =>  
+                let
+                   val () = html5_elm_list_out<document><writer(outbuf)>( wenv ) where {
+                      implement (env)
+                      html5$text<page_title><env>( x )  = s2m("Hello world")
+                      implement (env)
+                      html5$text<hello_world><env>( x ) = s2m("Hello world!")
+                    }
+                   val _ = html_headers_out( sock, "200 OK", sz2i( wenv.i ) )
+
+                   val p0 = arrayptr2ptr( wenv.buf )
+                   prval pfa = arrayptr_takeout( wenv.buf )
+                   val ssz = sockfd_write( sock, !p0, wenv.i )
+                   prval () = arrayptr_addback( pfa | wenv.buf )
+                 in
+                end 
+             | GetAbout() =>   
+                let
+                   val () = html5_elm_list_out<document><writer(outbuf)>( wenv ) where {
+                      implement (env)
+                      html5$text<page_title><env>( x )  = s2m("About")
+                      implement (env)
+                      html5$text<hello_world><env>( x ) = s2m("This is the story about some guy")
+                    }
+
+                   val _ = html_headers_out( sock, "200 OK", sz2i( wenv.i ) )
+
+                   val p0 = arrayptr2ptr( wenv.buf )
+                   prval pfa = arrayptr_takeout( wenv.buf )
+                   val ssz = sockfd_write( sock, !p0, wenv.i )
+                   prval () = arrayptr_addback( pfa | wenv.buf )
+                 in
+                end 
+             | GetWs(b,sec_ws_key_opt) => {
+                  (** FIXME: do real validation **)
+                  val () = assertloc( strptr_length( sec_ws_key_opt ) >= 24 )
+                  val () = assertloc( b = 15U )
+
+                  var output_b64 = @[char][29]()
+                  val p = ptrcast(sec_ws_key_opt) 
+                  val (pf,pff | p) = $UNSAFE.ptr0_vtake{array(char,24)}( p )
+
+                  val () = ws_handshake_accept( !p, output_b64 )
+
+                  val () = ws_headers_out( sock, output_b64 )
+
+                  prval () = pff( pf )
+                }
+             | Err400() =>   
+                let
+                   val () = html5_elm_list_out<document><writer(outbuf)>( wenv ) where {
+                      implement (env)
+                      html5$text<page_title><env>( x )  = s2m("Bad Request")
+                      implement (env)
+                      html5$text<hello_world><env>( x ) = s2m("Bad Request")
+                    }
+
+                   val _ = html_headers_out( sock, "400 Bad Request", sz2i( wenv.i ) )
+
+                   val p0 = arrayptr2ptr( wenv.buf )
+                   prval pfa = arrayptr_takeout( wenv.buf )
+                   val ssz = sockfd_write( sock, !p0, wenv.i )
+                   prval () = arrayptr_addback( pfa | wenv.buf )
+                 in
+                end 
+             | Err404() =>   
+                let
+                   val () = html5_elm_list_out<document><writer(outbuf)>( wenv ) where {
+                      implement (env)
+                      html5$text<page_title><env>( x )  = s2m("Not Found")
+                      implement (env)
+                      html5$text<hello_world><env>( x ) = s2m("Not Found")
+                    }
+
+                   val _ = html_headers_out( sock, "404 Not Found", sz2i( wenv.i ) )
+                   
+                   val p0 = arrayptr2ptr( wenv.buf )
+                   prval pfa = arrayptr_takeout( wenv.buf )
+                   val ssz = sockfd_write( sock, !p0, wenv.i )
+                   prval () = arrayptr_addback( pfa | wenv.buf )
+                 in
+                end 
+          )  
+
+        val () = response(info.route, sock, wenv)
+
+        val ( pf | p )
+          = arrayptr_unobjectify( pf | wenv.buf )
+        
+        prval () = view@outbuf := pf
+
+        val () = info.status := (
+          case+ info.route of
+            | GetWs(_,_) => Ws()
+            | _ => Read()
+        )
+
         prval () = fold@env
 
         val () = assertloc( evloop_events_mod( pool, EvtR(), env) )
        in  
       end
+  | Ws () => {
+        val () = println!("WS activity")
+        var buf = @[byte][BUFSZ]()
+        var msgbuf = @[byte][BUFSZ]()
+        prval () = b0ytes2bytes( msgbuf )
 
+        val (pfap | ap) = arrayptr_objectify( view@msgbuf | addr@msgbuf )
+
+        var penv : ws_frame_parser(msgbuf,BUFSZ) 
+          = ws_frame_parser_init( ap, i2sz(BUFSZ) )
+        
+        fun loop{fd:int}{n:nat}(
+               sock : &sockfd(fd,conn)
+             , buf: &array(byte,n)
+             , sz : size_t n
+             , penv: &ws_frame_parser(msgbuf,BUFSZ)
+        ) : bool 
+         = let
+              val ssz = sockfd_read(sock,buf,sz) 
+            in if  ssz > 0 then 
+                let
+                  prval (pf1,pf2) = array_v_split_at( view@buf | g1int2uint(ssz) )
+
+                  val status = ws_frame_parse( buf, g1int2uint( ssz ), penv )
+
+                  prval () = view@buf := array_v_unsplit( pf1, pf2 )
+
+                in case+ status of
+                  | ws_success() => true where {
+                      val j = penv.j
+                      val bsz = penv.bufsz
+                      val () = (
+                        if j < bsz
+                        then begin
+                           println!("Success");
+                           (case+ penv.opcode of
+                            | 0x0U => print!("CONTINUATION: ")
+                            | 0x1U => print!("TEXT: ")
+                            | 0x2U => print!("BIN: ")
+                            | 0x8U => print!("CLOSE: ")
+                            | 0x9U => print!("PING: ")
+                            | 0xAU => print!("PONG: ")
+                            | _ => print!("UNKNOWN: ")
+                           );
+                           arrayptr_set_at<byte>(penv.buf, j, i2byte(0));
+                           println!( $UNSAFE.cast{string}(ptrcast(penv.buf) ) ); 
+                          end 
+                        else ()
+                      )
+                    }
+                  | ws_continue() => loop(sock,buf,sz,penv)
+                  | ws_buffer_full() => (ws_frame_parser_reset_buf(penv); loop(sock,buf,sz,penv))
+                end
+              else  ifcase
+                    | ssz = 0 => false 
+                      (* I think we need to block here until 
+                        we store the HTTP parser state somewhere *)
+                    | the_errno_test(EAGAIN) => true // loop(sock,buf,sz)
+                      (*  keep_open() *) 
+                    | _ => false
+           end
+
+        prval () = b0ytes2bytes( buf )
+        prval () = socket_is_conn( sock )
+        val b0 = loop( sock, buf, i2sz(BUFSZ), penv )
+
+        val ap = ws_frame_parser_destroy( penv )
+
+        val (pfmb | p) = arrayptr_unobjectify( pfap | ap )
+        prval () = view@msgbuf := pfmb
+
+        val () = 
+          if b0
+          then {
+            var resp = @[byte][8](
+                i2byte(0x81)
+              , i2byte(0x06)
+              , $UNSAFE.cast{byte}('H') 
+              , $UNSAFE.cast{byte}('e') 
+              , $UNSAFE.cast{byte}('l') 
+              , $UNSAFE.cast{byte}('l') 
+              , $UNSAFE.cast{byte}('o') 
+              , $UNSAFE.cast{byte}('!') 
+              )
+            val ssz = sockfd_write( sock, resp, i2sz(8) )
+
+            prval () = fold@env
+          
+            val () = assertloc( evloop_events_mod( pool, EvtR(), env) )
+          }
+          else {
+            prval () = fold@env
+            val () = assertloc( evloop_events_dispose{client_state}( pool, env ) )
+          }
+        
+    }
 ) where {
   val @CLIENT(sock,data,info) = env
 }

@@ -1,7 +1,7 @@
 # ATS2 HTTP Server Demo
 
 A short demo of `evloop` and `atshtml`.  This defaults to the epoll
-backnend.
+backend.
 
 This one performs a websocket roundtrip in the console.
 
